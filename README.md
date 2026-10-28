@@ -250,7 +250,18 @@ createEngine(game, {
 | `@slothkit-engine/rules` | Hunting automation: potion use, return-to-town conditions, town routines |
 | `@slothkit-engine/save` | Versioned saves, migrations, compression, export/import strings |
 | `@slothkit-engine/sim` | Offline estimation and the headless balance simulator |
+| `@slothkit-engine/net` | Server-to-client protocol: scene snapshots, deltas, events, and an interpolating client for rendering |
 | `@slothkit-engine/devtools` | Inspector: live state, time warp, modifier breakdowns, spawn overlays |
+
+## Running it online
+
+Slothkit runs entirely in the browser for single-player games. For online games, where players mustn't be able to cheat, the server runs one engine per player and the browser only renders:
+
+- The browser sends commands and receives scene state and events over a socket. It never holds seeds or state of value.
+- Players who disconnect and return within a grace period get the missed ticks simulated exactly. After that, progress is estimated offline, up to a configurable limit.
+- Persistent state (party, inventory, gold) is saved to your database. Transient state (positions, wild creatures) is regenerated whenever a session starts.
+
+See [docs/architecture.md](./docs/architecture.md) for the full design.
 
 ## Core concepts
 
@@ -311,7 +322,9 @@ Slothkit is **pre-alpha**. The API above is the design target and may change bef
 - [ ] Equipment and skills
 - [ ] Capturing and storage, as an optional module for creature collectors
 - [ ] `devtools` inspector
-- [ ] Server-side validation helpers (plausibility checks, deterministic replay)
+- [ ] Persistent and transient state tiers in `core`
+- [ ] Session lifecycle: grace period, offline cap, scene regeneration
+- [ ] `net`: server-to-client protocol and interpolating client
 
 ## Design principles
 
