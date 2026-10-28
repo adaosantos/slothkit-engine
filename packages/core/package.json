@@ -32,6 +32,10 @@
     "url": "git+https://github.com/adaosantos/slothkit.git",
     "directory": "packages/core"
   },
+  "homepage": "https://github.com/adaosantos/slothkit#readme",
+  "bugs": {
+    "url": "https://github.com/adaosantos/slothkit/issues"
+  },
   "publishConfig": {
     "access": "public"
   }
