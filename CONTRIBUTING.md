@@ -86,10 +86,14 @@ The packages are built with `isolatedDeclarations`, so everything exported needs
 
 ```ts
 // ✗ return type is inferred
-export function createRng(seed: number) { /* ... */ }
+export function createRng(seed: number) {
+  /* ... */
+}
 
 // ✓ return type is explicit
-export function createRng(seed: number): Rng { /* ... */ }
+export function createRng(seed: number): Rng {
+  /* ... */
+}
 ```
 
 ### 5. Content is data, mechanics are systems
