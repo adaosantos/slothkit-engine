@@ -1,0 +1,339 @@
+<div align="center">
+
+# 🦥 Slothkit
+
+**A headless engine for auto-hunting idle RPGs.**
+Your party hunts, loots, heals, and restocks. You make the decisions that matter.
+
+[![npm](https://img.shields.io/npm/v/@slothkit/core?color=7c6f57)](https://www.npmjs.com/package/@slothkit/core)
+[![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
+[![status](https://img.shields.io/badge/status-pre--alpha-orange)](#status)
+
+</div>
+
+---
+
+Slothkit is an engine for idle games built around one loop:
+
+```
+        ┌──────────────────────────── hunt map ─────────────────────────────┐
+        │  seek nearest enemy → fight → loot + XP → auto-potion if low HP   │
+        └───────────────┬──────────────────────────────────▲────────────────┘
+   bag full / out of    │                                  │  restocked
+   potions / HP danger  ▼                                  │
+        ┌─────────────────────────────── town ──────────────────────────────┐
+        │              sell loot → buy potions → (gear, skills…)            │
+        └───────────────────────────────────────────────────────────────────┘
+```
+
+Your party walks through a bounded map instance full of creatures, fights them automatically, earns XP and items, drinks potions to stay alive, and goes back to town to sell loot and buy supplies. Slothkit runs that loop, keeps it deterministic, and calculates what happened while the player was away.
+
+The same engine powers different kinds of games, depending on how you configure the party:
+
+| Game style | Party setup |
+| --- | --- |
+| **Solo idle RPG.** Create a character and level it up. | `size: 1`. The party *is* your character. |
+| **Creature collector.** A trainer and a team of creatures. | `size: 6`. Each creature has its own stats, HP, level, and XP. The trainer holds the bag and the rules. |
+| **Squad idle.** A warrior, a mage, and a healer. | `size: 3`, mixed classes, shared inventory. |
+
+Slothkit doesn't draw anything. It exposes positions, HP, and events, and you render them with Canvas, Pixi, Phaser, or the DOM.
+
+## Features
+
+- **Units.** Anything that fights is a unit created from a template: your character, each creature on your team, every enemy. Units have their own stats, HP, level, XP, and growth curves.
+- **Configurable party.** Party size, how many units are on the field, how they move, how XP is shared, and what happens when one falls are all configuration.
+- **Map instances.** Bounded hunt maps with spawn zones, population caps, and respawn timers, plus towns with shops. Maps can be gated by level or progress.
+- **Auto-combat.** Target selection, approach, and locked-in fights driven by attack timers. Creatures have aggro radii, call nearby packmates, and can swarm your party.
+- **Hunting rules.** Declare who drinks a potion and when, when to head back to town, and what to do there. Players can also do every step by hand.
+- **Loot & inventory.** Weighted loot tables, gold drops, stackable items, bag capacity, and shops that buy and sell.
+- **Modifiers.** Every computed value is `(base + Σ add) × Π mult`, and every bonus has a traceable source.
+- **Offline progress.** Kills, XP per unit, gold, loot, potions used, town trips, and faints are estimated from the combat model, so a player returning after 8 hours gets an accurate report without 8 hours of simulation.
+- **Deterministic.** Seeded RNG and a pure `update(state, dt)`. The same seed and the same commands always produce the same state, which gives you replays, reproducible tests, and server-side validation.
+- **Type-safe content.** Units, items, and maps are declared as data, and types are inferred from them. Your editor autocompletes `'slime'` and flags `'slmie'`.
+- **Balance simulator.** Run a party through every map headlessly and get XP/h, gold/h, potion cost, and time-to-level tables.
+
+## Quick look
+
+A creature-collector setup: a trainer with a team of up to six creatures, each leveling independently.
+
+```ts
+import { defineGame, createEngine } from '@slothkit/core';
+import { loot, heal, spawn, level } from '@slothkit/content';
+import { below, lowest, any, bagFull, stockBelow, fainted, sellAll, buyUpTo } from '@slothkit/rules';
+
+const game = defineGame({
+  // Templates for everything that fights, ally or enemy
+  units: {
+    sprout: {
+      stats:  { hp: 45, attack: 8, defense: 4, attackRate: 1.2 },
+      growth: { hp: 5, attack: 1.5, defense: 1 },  // per level
+      xpCurve: 'medium',
+    },
+    emberkit: {
+      stats:  { hp: 38, attack: 11, defense: 3, attackRate: 1.0 },
+      growth: { hp: 4, attack: 2, defense: 0.8 },
+      xpCurve: 'medium',
+    },
+    slime: {
+      stats: { hp: 30, attack: 4, defense: 1, attackRate: 1.5 },
+      xpYield: 12,
+      aggro: 'passive',                     // only fights back
+      loot: loot.table([
+        { gold: [2, 6] },
+        { item: 'slimeGel', chance: 0.6, qty: [1, 3] },
+      ]),
+    },
+    wolf: {
+      stats: { hp: 70, attack: 11, defense: 3, attackRate: 1.2 },
+      xpYield: 40,
+      aggro: { radius: 120, pack: true },   // attacks on sight and calls friends
+      loot: loot.table([
+        { gold: [8, 15] },
+        { item: 'wolfFang', chance: 0.25 },
+      ]),
+    },
+  },
+
+  party: {
+    size: 6,
+    deploy: 'all',              // 'all' on the field, or 'active' (one fights, the rest swap in)
+    movement: 'follow-leader',  // the rest of the party trails the leader
+    xp: 'participants',         // 'killer' | 'split' | 'participants' | 'full'
+    onFaint: 'bench',           // fainted units sit out until healed in town
+    onWipe: { returnTo: 'town', lose: { gold: 0.1 } },
+  },
+
+  items: {
+    potion:   { kind: 'consumable', price: 20, use: heal(50) },
+    slimeGel: { kind: 'loot', sellPrice: 4, stack: 100 },
+    wolfFang: { kind: 'loot', sellPrice: 15, stack: 100 },
+  },
+
+  maps: {
+    town:   { kind: 'town', heals: true, shops: { general: { sells: ['potion'], buys: 'loot' } } },
+    meadow: { kind: 'hunt', size: [1600, 1200], spawns: [spawn('slime', { max: 10, respawn: 4 })] },
+    forest: {
+      kind: 'hunt',
+      size: [2000, 1600],
+      requires: level(5),
+      spawns: [spawn('wolf', { max: 6, respawn: 8 }), spawn('slime', { max: 4, respawn: 4 })],
+    },
+  },
+});
+
+const engine = createEngine(game, { seed: 42 });
+
+engine.party.add('sprout',   { name: 'Leafy' });
+engine.party.add('emberkit', { name: 'Cinder' });
+
+engine.party.setRules({
+  potion:   { use: 'potion', on: lowest('hp'), when: below('hp', 0.4) },
+  goToTown: any(bagFull(), stockBelow('potion', 3), fainted(2)),
+  inTown:   [sellAll('loot'), buyUpTo('potion', 20)],
+  thenGoTo: 'meadow',
+});
+
+engine.on('kill',    ({ creature, by }) => log(`${by.name} defeated a ${creature}`));
+engine.on('levelUp', ({ unit, level }) => toast(`${unit.name} reached level ${level}!`));
+
+engine.dispatch({ type: 'travel', to: 'meadow' });
+engine.start();
+```
+
+### The same engine as a solo RPG
+
+No team, just a character you level up. Only the content and the party settings change:
+
+```ts
+const game = defineGame({
+  units: {
+    adventurer: {
+      stats:  { hp: 100, attack: 10, defense: 5, attackRate: 1.0 },
+      growth: { hp: 12, attack: 2, defense: 1.5 },
+      xpCurve: 'slow',
+    },
+    slime: { /* …same as above… */ },
+  },
+  party: { size: 1, onWipe: { returnTo: 'town', lose: { xp: 0.05 } } },
+  items: { /* … */ },
+  maps:  { /* … */ },
+});
+
+const engine = createEngine(game, { seed: 42 });
+engine.party.add('adventurer', { name: 'Aria' });
+```
+
+Players can always act by hand. Rules are a convenience, not a requirement:
+
+```ts
+engine.dispatch({ type: 'use', item: 'potion', on: 'Cinder' });
+engine.dispatch({ type: 'travel', to: 'town' });
+engine.dispatch({ type: 'sell', item: 'wolfFang', amount: 'all' });
+engine.dispatch({ type: 'reorder', leader: 'Cinder' });
+```
+
+## The party model
+
+Two concepts keep the engine theme-agnostic:
+
+- **Units** fight. Each one is an instance of a template and owns its stats, current HP, level, XP, and modifiers. Allies and enemies use the same template format, so a creature can appear in the wild and on your team.
+- **The party** owns everything shared: inventory, gold, rules, current map, and the list of units. In a creature collector the party is the trainer; in a solo RPG it holds exactly one unit.
+
+| Option | Values | What it controls |
+| --- | --- | --- |
+| `size` | `1`…`n` | Maximum units in the party |
+| `deploy` | `'all'`, `'active'` | Whether every unit fights on the map, or one at a time with automatic swaps |
+| `movement` | `'follow-leader'`, `'independent'` | Whether units trail the leader or each seek their own targets |
+| `targeting` | `'focus'`, `'spread'` | Whether allies gang up on the leader's target or each pick their own |
+| `xp` | `'killer'`, `'split'`, `'participants'`, `'full'` | Who gets XP for a kill, and how much |
+| `onFaint` | `'bench'`, `'revive-in-town'`, `'permadeath'` | What happens to a unit at 0 HP |
+| `onWipe` | `{ returnTo, lose }` | What happens when every deployed unit is down |
+
+## Rendering
+
+Slothkit exposes plain state. Draw it however you like, at whatever frame rate you like:
+
+```ts
+function render() {
+  const { map, entities } = engine.view();     // positions interpolated between ticks
+  drawMap(map);
+  for (const e of entities) {
+    drawSprite(e.template, e.pos.x, e.pos.y);  // e.side is 'ally' or 'enemy'
+    drawHpBar(e.pos, e.hp / e.maxHp);
+  }
+  requestAnimationFrame(render);
+}
+
+engine.on('attack', ({ from, to, damage }) => spawnDamageNumber(to, damage));
+```
+
+Visual effects like hit flashes, lunges, and damage numbers belong to your renderer. They listen to events and never touch the simulation.
+
+## Offline progress
+
+```ts
+const report = engine.load(localStorage.getItem('save'));
+// {
+//   elapsed: 28_800,
+//   kills: { slime: 1_412 },
+//   units: {
+//     Leafy:  { xp: 8_472, levelsGained: 2 },
+//     Cinder: { xp: 8_472, levelsGained: 3 },
+//   },
+//   gold: 5_630, loot: { slimeGel: 1_694 },
+//   potionsUsed: 61, townTrips: 4, faints: 1, wipes: 0,
+// }
+```
+
+Fights in Slothkit are locked duels resolved by attack timers, so their outcome can be computed rather than simulated. Offline progress uses that model (time to reach a target, the party's combined damage, damage taken per kill, expected loot) and plays the hunting rules forward in large steps, including trips to town. It's exact on average and fast regardless of how long the player was away.
+
+Saves are versioned. When your game changes, add a migration and old saves keep working:
+
+```ts
+createEngine(game, {
+  migrations: {
+    2: (save) => ({ ...save, party: { ...save.party, formation: 'line' } }),
+  },
+});
+```
+
+## Packages
+
+| Package | What it does |
+| --- | --- |
+| `@slothkit/core` | Fixed-timestep loop, entities, systems, events, commands, seeded RNG |
+| `@slothkit/content` | Declaring unit templates, items, maps, loot tables, and shops |
+| `@slothkit/units` | Stats, growth, levels, XP curves, modifiers |
+| `@slothkit/party` | Party config, deployment, formation, XP sharing, faints and wipes, shared inventory |
+| `@slothkit/world` | Map instances, spawn zones, respawns, travel between maps and towns |
+| `@slothkit/combat` | Target selection, aggro, packs, steering, locked fights, damage formulas |
+| `@slothkit/rules` | Hunting automation: potion use, return-to-town conditions, town routines |
+| `@slothkit/save` | Versioned saves, migrations, compression, export/import strings |
+| `@slothkit/sim` | Offline estimation and the headless balance simulator |
+| `@slothkit/devtools` | Inspector: live state, time warp, modifier breakdowns, spawn overlays |
+
+## Core concepts
+
+**Tick loop.** The simulation runs at a fixed rate, independent of frame rate and of the browser throttling background tabs. Rendering only reads state.
+
+**Systems.** Each mechanic (spawning, AI, movement, combat, loot, rules) is a small function that runs once per tick, in an explicit order. Adding a mechanic means adding a system, not growing the loop.
+
+**Party AI.** The leader seeks the best target (nearby, ahead of its path, or whoever is attacking the party), walks into range, and locks into a fight. Other units follow or pick their own targets depending on the party config. Spawns are kept around the party so it always has somewhere meaningful to go.
+
+**Enemy AI.** Enemies wander near their spawn, attack anything inside their aggro radius, call packmates, and give up if pulled too far from home.
+
+**Rules.** Conditions and actions evaluated every tick: `when` something is true, `do` something, `on` some unit. They drive potions, retreating, and town routines, and they're plain data, so they can be saved and edited in-game.
+
+**Commands & events.** Player actions are commands: validated, logged, replayable. Everything that happens is an event that achievements, notifications, analytics, and your renderer can listen to.
+
+## Balance simulator
+
+```bash
+npx slothkit sim ./game.ts --party sprout,emberkit --level 1..20 --duration 24h
+```
+
+```
+map      lvl   xp/h/unit   gold/h   potions/h   faints/h   note
+meadow     1       1,050      640        3          0
+meadow     5       1,225      720        1          0       ⚠ outleveled, forest unlocked
+forest     5       3,400    1,950       14       0.30       ⚠ net gold negative after potions?
+forest     8       4,950    2,700        6          0
+```
+
+## Examples
+
+- [`examples/critter-hunt`](./examples/critter-hunt): a creature collector with a team of original creatures, two hunt maps, a town, potions, loot, and auto-rules, rendered on canvas.
+- [`examples/solo-quest`](./examples/solo-quest): a single-character idle RPG built from the same engine with a different party config.
+- [`examples/terminal-hunt`](./examples/terminal-hunt): a text UI, to show the engine has no rendering assumptions.
+
+```bash
+pnpm install
+pnpm --filter critter-hunt dev
+```
+
+## Status
+
+Slothkit is **pre-alpha**. The API above is the design target and may change before `1.0`. Feedback on the API is the most valuable contribution right now. Open an issue or a discussion.
+
+## Roadmap
+
+- [ ] `core`: loop, entities, systems, events, commands, RNG
+- [ ] `units`: stats, growth, XP, levels
+- [ ] `party`: config, deployment, XP sharing, faints and wipes
+- [ ] `world`: map instances, spawn zones, respawn, travel
+- [ ] `combat`: targeting, aggro, packs, locked fights
+- [ ] `content`: unit templates, items, loot tables, shops
+- [ ] `rules`: auto-potion, return-to-town, town routines
+- [ ] `save`: versioned saves and migrations
+- [ ] Offline progress from the combat model
+- [ ] `critter-hunt` and `solo-quest` examples
+- [ ] `sim`: balance simulator and CLI
+- [ ] Equipment and skills
+- [ ] Capturing and storage, as an optional module for creature collectors
+- [ ] `devtools` inspector
+- [ ] Server-side validation helpers (plausibility checks, deterministic replay)
+
+## Design principles
+
+1. **Headless first.** The engine never assumes how you render.
+2. **Theme-agnostic.** Characters, creatures, and squads are all units in a party.
+3. **Data over code.** Content and party behavior are declared, mechanics are systems.
+4. **Deterministic.** Same input, same output, always.
+5. **Automation is optional.** Everything a rule does, a player can do by hand.
+6. **Never break a save.** Idle players keep the same save for years.
+
+## Contributing
+
+Contributions are welcome. Please open an issue before large changes so we can agree on the approach.
+
+```bash
+pnpm install
+pnpm test      # Vitest
+pnpm build     # all packages
+```
+
+Every package has tests for determinism: same seed plus same commands must produce identical state.
+
+## License
+
+[MIT](./LICENSE)
