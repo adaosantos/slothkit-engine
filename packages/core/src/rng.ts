@@ -17,6 +17,65 @@ export interface Rng {
   getState(): number;
 }
 
+/**
+ * Independent named RNG streams derived from one seed.
+ *
+ * Each system draws from its own stream (`streams.stream('loot')`), so adding
+ * a random call in one system doesn't shift the results of every other system.
+ */
+export interface RngStreams {
+  stream(name: string): Rng;
+  /** State of every stream used so far, for saving. */
+  getState(): Record<string, number>;
+  /** Restores stream states. Streams not listed start fresh from the seed. */
+  setState(state: Record<string, number>): void;
+}
+
+export function createRngStreams(seed: number): RngStreams {
+  const root = seed >>> 0;
+  let streams = new Map<string, Rng>();
+
+  return {
+    stream(name) {
+      let rng = streams.get(name);
+      if (!rng) {
+        rng = createRng(deriveSeed(root, name));
+        streams.set(name, rng);
+      }
+      return rng;
+    },
+    getState() {
+      const state: Record<string, number> = {};
+      for (const name of [...streams.keys()].sort()) {
+        const rng = streams.get(name);
+        if (rng) state[name] = rng.getState();
+      }
+      return state;
+    },
+    setState(state) {
+      streams = new Map();
+      for (const [name, value] of Object.entries(state)) {
+        streams.set(name, createRng(value));
+      }
+    },
+  };
+}
+
+/** Mixes a seed with a stream name (FNV-1a + murmur3 finalizer). */
+function deriveSeed(seed: number, name: string): number {
+  let hash = 0x811c9dc5 ^ seed;
+  for (let i = 0; i < name.length; i++) {
+    hash ^= name.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x85ebca6b);
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 0xc2b2ae35);
+  hash ^= hash >>> 16;
+  return hash >>> 0;
+}
+
 export function createRng(seed: number): Rng {
   let state = seed >>> 0;
 
