@@ -65,7 +65,8 @@ examples/       empty for now
 - **Fixed timestep**: default 10 Hz, configurable (`tickRate`). `advance(ms)` uses an accumulator, caps ticks per call (`maxTicksPerAdvance`, default one minute of ticks), and reports `droppedMs`. `step(n)` runs exact ticks. `engine.tick` is the number of completed ticks; `ctx.tick` is the 0-based index of the running tick.
 - **Tick cycle**: apply queued commands in dispatch order → flush → run systems in registration order (flush after each) → `tick++` → deliver queued events to listeners.
 - **Events are queued per tick**: systems later in the same tick can `read()` them; external listeners (`engine.on`) receive them only after the tick completes.
-- **Commands** are queued by `dispatch` (validated against registered handlers and `structuredClone`d), applied at the start of the next tick, and optionally recorded in `commandLog`.
+- **Commands** are declared as a plain handler function (trusted only) or as `{ validate, handle }` (also accepted from untrusted sources). Command types are looked up in a `Map`, never on a plain object, so `{ type: 'toString' }` can't reach `Object.prototype`. Commands are applied at the start of the next tick and optionally recorded in `commandLog`; `drainCommandLog()` returns and clears the entries since the last drain.
+- **Two dispatch paths.** `dispatch(command)` is for trusted, typed code: it throws on unknown types, skips `validate`, and ignores the queue limit. `tryDispatch(input: unknown)` is for socket input and never throws: it returns `{ ok: true }` or `{ ok: false, reason }` with `reason` one of `queue-full` (checked first, cheapest under flood), `malformed` (not a cloneable object with a string `type`), `unknown-command` (unknown, or declared without `validate`), or `invalid` (`validate` returned anything but `true`, or threw). It `structuredClone`s first and validates the clone, so getters or later mutation can't swap the payload. `validate` checks shape only and never sees the state, since the state can change before the command is applied; game rules belong in `handle`. `maxQueuedCommands` (default 16) caps pending commands; `dispatch` counts toward it. The field is `handle`, not `apply`: a union with a function type would merge with `Function.prototype.apply` and break contextual typing.
 - **RNG**: never use `Math.random()`. Systems draw from named streams (`ctx.rng('loot')`), derived from the engine seed, so one system's random calls don't shift another's.
 - **Game types** are declared in one type (`{ components, events, commands, resources }`, all optional) and passed as `createEngine<Game>()` / `defineSystem<Game>()`. `commands` and `resources` options become required when the game declares them.
 - **serialize()** returns a JSON string with `format`, `tick`, `accumulator`, world (`nextId`, entities, resources), RNG stream states, and pending commands. The engine never stores it anywhere: the caller decides (localStorage, database). `load()` restores in place, so references to `engine.world` stay valid.
@@ -100,25 +101,14 @@ Full detail in `docs/architecture.md`. Summary:
 
 Do these in order.
 
-### 1. Safe commands in `core` (next)
-
-Commands now come from an untrusted socket.
-
-- Per-command `validate(command): boolean` (or returning a reason) declared alongside the handler, e.g. `commands: { use: { validate, apply } }`. Keep it a plain function so `core` stays dependency-free (users can call Zod/Valibot inside it).
-- `engine.tryDispatch(input: unknown)`: never throws on bad input; returns `{ ok: true } | { ok: false, reason }` for unknown types, failed validation, or a full queue. Keep `dispatch` for trusted code.
-- A limit on queued commands per tick.
-- `engine.drainCommandLog()`: returns the entries recorded since the last drain and clears them, so the server can persist the log in batches.
-- Handlers still enforce game rules against the real state (e.g., "is there a potion in the inventory?").
-- Update tests, the README's command examples, and `CLAUDE.md`.
-
-### 2. Persistent and transient state tiers in `core`
+### 1. Persistent and transient state tiers in `core` (next)
 
 - A way to mark entities as transient (e.g., a `transient` marker component or a spawn option).
 - A persistent save that excludes transient entities and other scene-only state.
 - `resetScene()` that removes transient entities so spawners can repopulate.
 - Tests: persistent save → load → reset → continue.
 
-### 3. Vertical slice (`examples/critter-hunt`), online from the start
+### 2. Vertical slice (`examples/critter-hunt`), online from the start
 
 - Node server: one engine per player, WebSocket transport.
 - Minimal mechanics: one map, one spawner, one enemy species, one player creature that seeks the nearest target, locks into a timer-driven fight, kills, and earns XP.
@@ -126,7 +116,7 @@ Commands now come from an untrusted socket.
 - Session: disconnect and reconnect within the grace period using `step(n)`.
 - Mechanics start inside the example and are extracted into packages (`world`, `combat`, `units`, `net`) once they stabilize.
 
-### 4. After the slice
+### 3. After the slice
 
 Loot and inventory → potions and hunting rules → town and shop → multi-unit party → offline estimator with the 24 h cap → `net` package → balance simulator.
 

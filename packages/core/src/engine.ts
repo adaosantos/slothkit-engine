@@ -67,11 +67,37 @@ export function defineSystem<T extends GameTypes>(system: System<T>): System<T> 
   return system;
 }
 
+/** Applies a command at the start of a tick. Enforces game rules against the real state. */
+export type CommandHandler<T extends GameTypes, K extends keyof CommandsOf<T> & string> = (
+  ctx: TickContext<T>,
+  command: { readonly type: K } & CommandsOf<T>[K],
+) => void;
+
+/** What `validate` receives: a plain object whose `type` is already known to be `K`. */
+export type CommandInput<K extends string> = {
+  readonly type: K;
+  readonly [field: string]: unknown;
+};
+
+/**
+ * A command that untrusted sources can send through `tryDispatch`.
+ *
+ * `validate` checks the payload's shape only. It never sees the game state,
+ * because the state can change before the command is applied: game rules
+ * belong in `handle`.
+ */
+export interface CommandDefinition<T extends GameTypes, K extends keyof CommandsOf<T> & string> {
+  /** Returns true when `input` is a well-formed command. Throwing counts as false. */
+  validate(input: CommandInput<K>): boolean;
+  handle: CommandHandler<T, K>;
+}
+
+/**
+ * Command handlers by type. A plain function is trusted: only `dispatch` can
+ * queue it. A `{ validate, handle }` definition can also come through `tryDispatch`.
+ */
 export type CommandHandlers<T extends GameTypes> = {
-  [K in keyof CommandsOf<T> & string]: (
-    ctx: TickContext<T>,
-    command: { readonly type: K } & CommandsOf<T>[K],
-  ) => void;
+  [K in keyof CommandsOf<T> & string]: CommandHandler<T, K> | CommandDefinition<T, K>;
 };
 
 interface BaseOptions<T extends GameTypes> {
@@ -89,6 +115,11 @@ interface BaseOptions<T extends GameTypes> {
   systems?: readonly System<T>[];
   /** Keep a log of applied commands for replays. Defaults to false. */
   recordCommands?: boolean;
+  /**
+   * Maximum commands waiting for the next tick. `tryDispatch` rejects commands
+   * beyond it; `dispatch` always queues. Defaults to 16.
+   */
+  maxQueuedCommands?: number;
 }
 
 type CommandsField<T extends GameTypes> = [keyof CommandsOf<T>] extends [never]
@@ -110,6 +141,21 @@ export interface AdvanceResult {
   readonly droppedMs: number;
 }
 
+/** Why `tryDispatch` rejected an input. */
+export type DispatchRejection =
+  /** Not a cloneable object with a string `type`. */
+  | 'malformed'
+  /** No command of that type, or one without `validate`. */
+  | 'unknown-command'
+  /** `validate` returned false or threw. */
+  | 'invalid'
+  /** `maxQueuedCommands` reached. */
+  | 'queue-full';
+
+export type DispatchResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: DispatchRejection };
+
 export interface CommandLogEntry<T extends GameTypes> {
   readonly tick: number;
   readonly command: CommandOf<T>;
@@ -125,14 +171,27 @@ export interface Engine<T extends GameTypes> {
    * to interpolate between the previous and current state.
    */
   readonly alpha: number;
-  /** Applied commands, when `recordCommands` is enabled. */
+  /**
+   * Applied commands not yet drained, when `recordCommands` is enabled. It
+   * grows without limit unless `drainCommandLog()` is called.
+   */
   readonly commandLog: readonly CommandLogEntry<T>[];
   /** Adds elapsed real time and runs every tick that fits. */
   advance(ms: number): AdvanceResult;
   /** Runs an exact number of ticks, ignoring real time. */
   step(ticks?: number): void;
-  /** Queues a command. It's applied at the start of the next tick. */
+  /**
+   * Queues a command from trusted code. It's applied at the start of the next
+   * tick. Skips `validate` and the queue limit; throws on an unknown type.
+   */
   dispatch(command: CommandOf<T>): void;
+  /**
+   * Queues a command from an untrusted source, such as a socket. Never throws:
+   * accepts only types declared with `validate`, and only while the queue has room.
+   */
+  tryDispatch(input: unknown): DispatchResult;
+  /** Returns the command log entries recorded since the last drain and clears them. */
+  drainCommandLog(): CommandLogEntry<T>[];
   /** Subscribes to an event. Listeners run after the tick that emitted it. */
   on<K extends keyof EventsOf<T>>(type: K, listener: Listener<EventsOf<T>[K]>): () => void;
   /** The full simulation state as a JSON string. */
@@ -152,7 +211,45 @@ interface SaveData<T extends GameTypes> {
   pending: CommandOf<T>[];
 }
 
-type AnyHandler<T extends GameTypes> = (ctx: TickContext<T>, command: CommandOf<T>) => void;
+interface RegisteredCommand<T extends GameTypes> {
+  handle: (ctx: TickContext<T>, command: CommandOf<T>) => void;
+  validate?: (input: CommandInput<string>) => boolean;
+}
+
+type AnyCommandEntry<T extends GameTypes> =
+  | RegisteredCommand<T>['handle']
+  | { validate: RegisteredCommand<T>['validate']; handle: RegisteredCommand<T>['handle'] };
+
+function registerCommands<T extends GameTypes>(
+  handlers: CommandHandlers<T> | undefined,
+): Map<string, RegisteredCommand<T>> {
+  const commands = new Map<string, RegisteredCommand<T>>();
+  for (const [type, entry] of Object.entries(
+    (handlers ?? {}) as Record<string, AnyCommandEntry<T>>,
+  )) {
+    if (typeof entry === 'function') {
+      commands.set(type, { handle: entry });
+    } else if (typeof entry?.handle === 'function' && typeof entry.validate === 'function') {
+      commands.set(type, { handle: entry.handle, validate: entry.validate });
+    } else {
+      throw new TypeError(
+        `createEngine: command "${type}" must be a function or { validate, handle }`,
+      );
+    }
+  }
+  return commands;
+}
+
+function isCommandInput(value: unknown): value is CommandInput<string> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    typeof (value as { type?: unknown }).type === 'string'
+  );
+}
+
+const reject = (reason: DispatchRejection): DispatchResult => ({ ok: false, reason });
 
 export function createEngine<T extends GameTypes>(options: EngineOptions<T>): Engine<T> {
   const tickRate = options.tickRate ?? 10;
@@ -167,8 +264,12 @@ export function createEngine<T extends GameTypes>(options: EngineOptions<T>): En
   const stepMs = 1000 / tickRate;
   const dt = 1 / tickRate;
   const systems = [...(options.systems ?? [])];
-  const handlers = (options.commands ?? {}) as Record<string, AnyHandler<T> | undefined>;
+  const commands = registerCommands(options.commands);
   const recordCommands = options.recordCommands ?? false;
+  const maxQueuedCommands = options.maxQueuedCommands ?? 16;
+  if (!Number.isInteger(maxQueuedCommands) || maxQueuedCommands < 1) {
+    throw new RangeError('createEngine: maxQueuedCommands must be a positive integer');
+  }
 
   const initialResources = structuredClone(options.resources ?? {}) as ResourcesOf<T>;
   const world = new WorldStore<ComponentsOf<T>, ResourcesOf<T>>(initialResources);
@@ -194,12 +295,12 @@ export function createEngine<T extends GameTypes>(options: EngineOptions<T>): En
   function runTick(): void {
     world.beginDeferred();
     try {
-      const commands = pending;
+      const queued = pending;
       pending = [];
-      for (const command of commands) {
-        const handler = handlers[command.type];
-        if (!handler) throw new Error(`Unknown command "${command.type}"`);
-        handler(ctx, command);
+      for (const command of queued) {
+        const registered = commands.get(command.type);
+        if (!registered) throw new Error(`Unknown command "${command.type}"`);
+        registered.handle(ctx, command);
         if (recordCommands) commandLog.push({ tick, command });
       }
       world.flushDeferred();
@@ -256,10 +357,38 @@ export function createEngine<T extends GameTypes>(options: EngineOptions<T>): En
     },
 
     dispatch(command) {
-      if (!handlers[command.type]) {
+      if (!commands.has(command.type)) {
         throw new Error(`Engine.dispatch: no handler for command "${command.type}"`);
       }
       pending.push(structuredClone(command));
+    },
+
+    tryDispatch(input) {
+      if (pending.length >= maxQueuedCommands) return reject('queue-full');
+      // Clone first and check only the clone, so getters or later mutations
+      // can't change the command after it passes validation.
+      let command: unknown;
+      try {
+        command = structuredClone(input);
+      } catch {
+        return reject('malformed');
+      }
+      if (!isCommandInput(command)) return reject('malformed');
+      const validate = commands.get(command.type)?.validate;
+      if (!validate) return reject('unknown-command');
+      let valid: boolean;
+      try {
+        valid = validate(command);
+      } catch {
+        valid = false;
+      }
+      if (valid !== true) return reject('invalid');
+      pending.push(command as CommandOf<T>);
+      return { ok: true };
+    },
+
+    drainCommandLog() {
+      return commandLog.splice(0);
     },
 
     on(type, listener) {

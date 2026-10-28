@@ -181,6 +181,152 @@ describe('Commands', () => {
     const engine = createGame();
     expect(() => engine.dispatch({ type: 'fly' } as never)).toThrow();
   });
+
+  it('reject types inherited from Object.prototype', () => {
+    const engine = createGame();
+    expect(() => engine.dispatch({ type: 'toString' } as never)).toThrow();
+    expect(engine.tryDispatch({ type: 'toString' })).toEqual({
+      ok: false,
+      reason: 'unknown-command',
+    });
+  });
+
+  it('are drained from the log in batches', () => {
+    const engine = createGame();
+    const entity = engine.world.spawn({ position: { x: 0 } });
+    engine.dispatch({ type: 'teleport', id: entity.id, x: 1 });
+    engine.step();
+    expect(engine.drainCommandLog()).toEqual([
+      { tick: 0, command: { type: 'teleport', id: entity.id, x: 1 } },
+    ]);
+    expect(engine.commandLog).toEqual([]);
+    expect(engine.drainCommandLog()).toEqual([]);
+
+    engine.dispatch({ type: 'teleport', id: entity.id, x: 2 });
+    engine.step();
+    expect(engine.drainCommandLog()).toEqual([
+      { tick: 1, command: { type: 'teleport', id: entity.id, x: 2 } },
+    ]);
+  });
+});
+
+describe('Untrusted commands', () => {
+  type Game = {
+    resources: { used: string[]; granted: number };
+    commands: { use: { item: string }; grant: { amount: number } };
+  };
+
+  const createGame = (maxQueuedCommands?: number) =>
+    createEngine<Game>({
+      seed: 1,
+      maxQueuedCommands,
+      resources: { used: [], granted: 0 },
+      commands: {
+        use: {
+          validate: (input) => typeof input.item === 'string' && input.item.length > 0,
+          handle: ({ world }, { item }) => {
+            world.resources.used.push(item);
+          },
+        },
+        grant: ({ world }, { amount }) => {
+          world.resources.granted += amount;
+        },
+      },
+    });
+
+  it('queue valid input and apply it on the next tick', () => {
+    const engine = createGame();
+    expect(engine.tryDispatch({ type: 'use', item: 'potion' })).toEqual({ ok: true });
+    engine.step();
+    expect(engine.world.resources.used).toEqual(['potion']);
+  });
+
+  it('reject malformed input without throwing', () => {
+    const engine = createGame();
+    const inputs: unknown[] = [
+      undefined,
+      null,
+      42,
+      'use',
+      [],
+      ['use'],
+      {},
+      { type: 7 },
+      { type: 'use', item: () => 'potion' },
+    ];
+    for (const input of inputs) {
+      expect(engine.tryDispatch(input)).toEqual({ ok: false, reason: 'malformed' });
+    }
+  });
+
+  it('reject unknown types and trusted-only commands', () => {
+    const engine = createGame();
+    expect(engine.tryDispatch({ type: 'fly' })).toEqual({ ok: false, reason: 'unknown-command' });
+    expect(engine.tryDispatch({ type: 'grant', amount: 1000 })).toEqual({
+      ok: false,
+      reason: 'unknown-command',
+    });
+    engine.dispatch({ type: 'grant', amount: 5 });
+    engine.step();
+    expect(engine.world.resources.granted).toBe(5);
+  });
+
+  it('reject input that fails validation', () => {
+    const engine = createGame();
+    expect(engine.tryDispatch({ type: 'use', item: '' })).toEqual({ ok: false, reason: 'invalid' });
+    expect(engine.tryDispatch({ type: 'use' })).toEqual({ ok: false, reason: 'invalid' });
+    engine.step();
+    expect(engine.world.resources.used).toEqual([]);
+  });
+
+  it('treat a throwing validator as invalid', () => {
+    const engine = createEngine<{ commands: { ping: Record<never, never> } }>({
+      seed: 1,
+      commands: {
+        ping: {
+          validate: () => {
+            throw new Error('schema mismatch');
+          },
+          handle: () => {},
+        },
+      },
+    });
+    expect(engine.tryDispatch({ type: 'ping' })).toEqual({ ok: false, reason: 'invalid' });
+  });
+
+  it('validate a copy, so later mutation of the input has no effect', () => {
+    const engine = createGame();
+    const input = { type: 'use', item: 'potion' };
+    engine.tryDispatch(input);
+    input.item = '';
+    engine.step();
+    expect(engine.world.resources.used).toEqual(['potion']);
+  });
+
+  it('reject input beyond the queue limit until the next tick', () => {
+    const engine = createGame(2);
+    expect(engine.tryDispatch({ type: 'use', item: 'a' }).ok).toBe(true);
+    engine.dispatch({ type: 'grant', amount: 1 });
+    expect(engine.tryDispatch({ type: 'use', item: 'b' })).toEqual({
+      ok: false,
+      reason: 'queue-full',
+    });
+    engine.dispatch({ type: 'grant', amount: 1 });
+    engine.step();
+    expect(engine.world.resources).toEqual({ used: ['a'], granted: 2 });
+    expect(engine.tryDispatch({ type: 'use', item: 'c' }).ok).toBe(true);
+  });
+
+  it('reject invalid options', () => {
+    expect(() => createGame(0)).toThrow(RangeError);
+    expect(() =>
+      createEngine<Game>({
+        seed: 1,
+        resources: { used: [], granted: 0 },
+        commands: { use: { handle: () => {} } as never, grant: () => {} },
+      }),
+    ).toThrow(TypeError);
+  });
 });
 
 describe('Determinism', () => {

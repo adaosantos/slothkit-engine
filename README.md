@@ -261,6 +261,31 @@ Slothkit runs entirely in the browser for single-player games. For online games,
 - Players who disconnect and return within a grace period get the missed ticks simulated exactly. After that, progress is estimated offline, up to a configurable limit.
 - Persistent state (party, inventory, gold) is saved to your database. Transient state (positions, wild creatures) is regenerated whenever a session starts.
 
+Socket input is untrusted. Declare which commands players may send with a `validate` function (plain code, or your schema library of choice), and queue socket messages with `tryDispatch`, which never throws:
+
+```ts
+const engine = createEngine<Game>({
+  seed,
+  maxQueuedCommands: 16,
+  commands: {
+    // Players may send this one: validate checks the shape, handle checks the rules.
+    use: {
+      validate: (input) => typeof input.item === 'string',
+      handle: ({ world }, { item }) => { /* is there one in the bag? */ },
+    },
+    // A plain function is trusted: only server code can dispatch it.
+    grantGold: ({ world }, { amount }) => { /* … */ },
+  },
+});
+
+socket.on('message', (data) => {
+  const result = engine.tryDispatch(JSON.parse(data));
+  if (!result.ok) socket.send(JSON.stringify({ rejected: result.reason }));
+});
+
+await db.appendCommands(playerId, engine.drainCommandLog());
+```
+
 See [docs/architecture.md](./docs/architecture.md) for the full design.
 
 ## Core concepts
