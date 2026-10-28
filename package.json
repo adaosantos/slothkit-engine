@@ -1,0 +1,27 @@
+{
+  "name": "slothkit-monorepo",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.16.1",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "pnpm -r --filter \"./packages/**\" build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "pnpm -r --filter \"./packages/**\" typecheck",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "pnpm build && changeset publish"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.3",
+    "@changesets/cli": "^3.0.3",
+    "tsdown": "^0.23.3",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

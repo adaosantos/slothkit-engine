@@ -1,0 +1,38 @@
+{
+  "name": "@slothkit/core",
+  "version": "0.0.0",
+  "description": "Fixed-timestep loop, entities, systems, events, commands, and seeded RNG for Slothkit.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "idle",
+    "incremental",
+    "rpg",
+    "game-engine",
+    "headless"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adaosantos/slothkit.git",
+    "directory": "packages/core"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
