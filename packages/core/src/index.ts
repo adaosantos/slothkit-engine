@@ -15,8 +15,11 @@ export type {
   EventsOf,
   GameTypes,
   ResourcesOf,
+  SaveTier,
+  SerializeOptions,
   System,
   TickContext,
+  TransientOptions,
 } from './engine.js';
 export { createEngine, defineSystem } from './engine.js';
 export type { Listener } from './events.js';

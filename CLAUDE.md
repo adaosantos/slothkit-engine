@@ -70,6 +70,7 @@ examples/       empty for now
 - **RNG**: never use `Math.random()`. Systems draw from named streams (`ctx.rng('loot')`), derived from the engine seed, so one system's random calls don't shift another's.
 - **Game types** are declared in one type (`{ components, events, commands, resources }`, all optional) and passed as `createEngine<Game>()` / `defineSystem<Game>()`. `commands` and `resources` options become required when the game declares them.
 - **serialize()** returns a JSON string with `format`, `tick`, `accumulator`, world (`nextId`, entities, resources), RNG stream states, and pending commands. The engine never stores it anywhere: the caller decides (localStorage, database). `load()` restores in place, so references to `engine.world` stay valid.
+- **State tiers.** `transient: { entities, components, resources }` declares scene-only state by key. An entity is transient if it carries any marker component in `entities` (e.g. `wild`); removing the marker makes it persistent (capture). `components` are stripped from persistent entities; `resources` go back to their initial value. Default is persistent, so forgetting to mark something never loses player data. `serialize({ tier: 'persistent' })` writes the state without transient data, pending commands, or accumulator, but keeps `tick`, `nextId` (ids are never reused), and RNG states (rewinding to the seed would replay the same drops on every reconnect). Saves carry `kind: 'full' | 'persistent'`; `load()` takes both. `resetScene()` drops the same things in place and is defined as equal to loading a persistent save of the current state (tested byte for byte); it throws during a tick. The core doesn't repopulate: spawners and placement systems notice what's missing.
 - The determinism test (1000 ticks → save → load → 1000 ticks must equal 2000 straight ticks, byte for byte) is the most important test in the package. Keep it passing.
 
 ## Rules
@@ -83,7 +84,7 @@ From `CONTRIBUTING.md`, condensed:
 - `@slothkit-engine/core` has zero runtime dependencies.
 - All state is plain JSON-serializable data. Systems are stateless; state they need between ticks lives in `world.resources` or components.
 - Content (creatures, items, maps, rules) is data; mechanics are systems.
-- Never break a save: shape changes need a migration and a test.
+- Never break a save once released: shape changes need a migration and a test. Until the first public release, save formats change freely (no migrations, no compatibility code).
 - Examples use original names and art only (no Pokémon or other franchise IP).
 - Conventional Commits (`feat(core): ...`). Before 1.0, breaking changes are `minor` changesets.
 
@@ -101,14 +102,7 @@ Full detail in `docs/architecture.md`. Summary:
 
 Do these in order.
 
-### 1. Persistent and transient state tiers in `core` (next)
-
-- A way to mark entities as transient (e.g., a `transient` marker component or a spawn option).
-- A persistent save that excludes transient entities and other scene-only state.
-- `resetScene()` that removes transient entities so spawners can repopulate.
-- Tests: persistent save → load → reset → continue.
-
-### 2. Vertical slice (`examples/critter-hunt`), online from the start
+### 1. Vertical slice (`examples/critter-hunt`), online from the start (next)
 
 - Node server: one engine per player, WebSocket transport.
 - Minimal mechanics: one map, one spawner, one enemy species, one player creature that seeks the nearest target, locks into a timer-driven fight, kills, and earns XP.
@@ -116,7 +110,7 @@ Do these in order.
 - Session: disconnect and reconnect within the grace period using `step(n)`.
 - Mechanics start inside the example and are extracted into packages (`world`, `combat`, `units`, `net`) once they stabilize.
 
-### 3. After the slice
+### 2. After the slice
 
 Loot and inventory → potions and hunting rules → town and shop → multi-unit party → offline estimator with the 24 h cap → `net` package → balance simulator.
 

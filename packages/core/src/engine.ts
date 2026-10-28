@@ -1,8 +1,9 @@
 import { EventQueue, type Listener } from './events.js';
 import { createRngStreams, type Rng } from './rng.js';
-import { type World, type WorldSnapshot, WorldStore } from './world.js';
+import { type Entity, type World, type WorldSnapshot, WorldStore } from './world.js';
 
 type Empty = Record<never, never>;
+type Bag = Record<string, unknown>;
 
 /**
  * Describes a game's types. Every field is optional.
@@ -120,6 +121,25 @@ interface BaseOptions<T extends GameTypes> {
    * beyond it; `dispatch` always queues. Defaults to 16.
    */
   maxQueuedCommands?: number;
+  /** Scene-only state, left out of persistent saves and dropped by `resetScene()`. */
+  transient?: TransientOptions<T>;
+}
+
+/**
+ * Declares which state belongs to the current scene only. Transient state is
+ * never in a persistent save and can be thrown away without the player losing
+ * anything: systems regenerate it.
+ */
+export interface TransientOptions<T extends GameTypes> {
+  /**
+   * Marker components: an entity carrying any of them is transient as a whole
+   * (e.g. `'wild'`). Removing the marker makes the entity persistent.
+   */
+  entities?: readonly (keyof ComponentsOf<T> & string)[];
+  /** Components stripped from persistent entities (e.g. `'position'`, `'target'`). */
+  components?: readonly (keyof ComponentsOf<T> & string)[];
+  /** Resources reset to their initial value from `resources`. */
+  resources?: readonly (keyof ResourcesOf<T> & string)[];
 }
 
 type CommandsField<T extends GameTypes> = [keyof CommandsOf<T>] extends [never]
@@ -133,6 +153,17 @@ type ResourcesField<T extends GameTypes> = [keyof ResourcesOf<T>] extends [never
 export type EngineOptions<T extends GameTypes> = BaseOptions<T> &
   CommandsField<T> &
   ResourcesField<T>;
+
+/**
+ * `full` is the exact simulation state. `persistent` keeps only what the player
+ * owns: no transient state, no pending commands, no partial tick.
+ */
+export type SaveTier = 'full' | 'persistent';
+
+export interface SerializeOptions {
+  /** Defaults to `'full'`. */
+  tier?: SaveTier;
+}
 
 export interface AdvanceResult {
   /** Ticks run by this call. */
@@ -194,16 +225,28 @@ export interface Engine<T extends GameTypes> {
   drainCommandLog(): CommandLogEntry<T>[];
   /** Subscribes to an event. Listeners run after the tick that emitted it. */
   on<K extends keyof EventsOf<T>>(type: K, listener: Listener<EventsOf<T>[K]>): () => void;
-  /** The full simulation state as a JSON string. */
-  serialize(): string;
-  /** Replaces the simulation state with a string produced by `serialize()`. */
+  /**
+   * The simulation state as a JSON string. A `full` save resumes exactly. A
+   * `persistent` save keeps entity ids, ticks, and RNG state, and loads into
+   * the same state `resetScene()` produces.
+   */
+  serialize(options?: SerializeOptions): string;
+  /** Replaces the simulation state with a string produced by `serialize()`, of either tier. */
   load(data: string): void;
+  /**
+   * Drops transient state in place: transient entities, transient components,
+   * transient resources (back to their initial value), pending commands, and
+   * the partial tick. Equivalent to loading a persistent save of the current
+   * state. Can't be called during a tick.
+   */
+  resetScene(): void;
 }
 
 const SAVE_FORMAT = 1;
 
 interface SaveData<T extends GameTypes> {
   format: number;
+  kind: SaveTier;
   tick: number;
   accumulator: number;
   world: WorldSnapshot<ComponentsOf<T>, ResourcesOf<T>>;
@@ -272,11 +315,24 @@ export function createEngine<T extends GameTypes>(options: EngineOptions<T>): En
   }
 
   const initialResources = structuredClone(options.resources ?? {}) as ResourcesOf<T>;
-  const world = new WorldStore<ComponentsOf<T>, ResourcesOf<T>>(initialResources);
+  const world = new WorldStore<ComponentsOf<T>, ResourcesOf<T>>(structuredClone(initialResources));
+
+  const transientEntities: readonly string[] = options.transient?.entities ?? [];
+  const transientComponents: readonly string[] = options.transient?.components ?? [];
+  const transientResources: readonly string[] = options.transient?.resources ?? [];
+  for (const key of transientResources) {
+    if (!Object.hasOwn(initialResources, key)) {
+      throw new Error(`createEngine: transient resource "${key}" has no initial value`);
+    }
+  }
+  const isTransient = (entity: Entity<ComponentsOf<T>>): boolean =>
+    transientEntities.some((key) => (entity as Bag)[key] !== undefined);
+  const initialResource = (key: string): unknown => structuredClone((initialResources as Bag)[key]);
   const rng = createRngStreams(options.seed);
   const events = new EventQueue<EventsOf<T>>();
 
   let tick = 0;
+  let inTick = false;
   let accumulator = 0;
   let pending: CommandOf<T>[] = [];
   const commandLog: CommandLogEntry<T>[] = [];
@@ -293,6 +349,7 @@ export function createEngine<T extends GameTypes>(options: EngineOptions<T>): En
   };
 
   function runTick(): void {
+    inTick = true;
     world.beginDeferred();
     try {
       const queued = pending;
@@ -311,11 +368,27 @@ export function createEngine<T extends GameTypes>(options: EngineOptions<T>): En
       }
     } finally {
       world.endDeferred();
+      inTick = false;
     }
 
     const completed = tick;
     tick++;
     events.flush(completed);
+  }
+
+  /** The world as `resetScene()` would leave it, without touching the live world. */
+  function persistentSnapshot(): WorldSnapshot<ComponentsOf<T>, ResourcesOf<T>> {
+    const snapshot = world.snapshot();
+    const entities = snapshot.entities
+      .filter((entity) => !isTransient(entity))
+      .map((entity) => {
+        const copy = { ...entity } as Bag;
+        for (const key of transientComponents) delete copy[key];
+        return copy as Entity<ComponentsOf<T>>;
+      });
+    const resources = { ...snapshot.resources } as Bag;
+    for (const key of transientResources) resources[key] = initialResource(key);
+    return { nextId: snapshot.nextId, entities, resources: resources as ResourcesOf<T> };
   }
 
   return {
@@ -395,22 +468,54 @@ export function createEngine<T extends GameTypes>(options: EngineOptions<T>): En
       return events.on(type, listener);
     },
 
-    serialize() {
-      const data: SaveData<T> = {
-        format: SAVE_FORMAT,
-        tick,
-        accumulator,
-        world: world.snapshot(),
-        rng: rng.getState(),
-        pending,
-      };
+    serialize({ tier = 'full' } = {}) {
+      const data: SaveData<T> =
+        tier === 'full'
+          ? {
+              format: SAVE_FORMAT,
+              kind: 'full',
+              tick,
+              accumulator,
+              world: world.snapshot(),
+              rng: rng.getState(),
+              pending,
+            }
+          : {
+              format: SAVE_FORMAT,
+              kind: 'persistent',
+              tick,
+              accumulator: 0,
+              world: persistentSnapshot(),
+              rng: rng.getState(),
+              pending: [],
+            };
       return JSON.stringify(data);
+    },
+
+    resetScene() {
+      if (inTick) throw new Error('Engine.resetScene: cannot reset during a tick');
+      for (const entity of world.entities()) {
+        if (isTransient(entity)) {
+          world.despawn(entity.id);
+          continue;
+        }
+        for (const key of transientComponents) {
+          world.remove(entity, key as keyof ComponentsOf<T>);
+        }
+      }
+      const resources = world.resources as Bag;
+      for (const key of transientResources) resources[key] = initialResource(key);
+      pending = [];
+      accumulator = 0;
     },
 
     load(serialized) {
       const data = JSON.parse(serialized) as SaveData<T>;
       if (data.format !== SAVE_FORMAT) {
         throw new Error(`Engine.load: unsupported save format ${String(data.format)}`);
+      }
+      if (data.kind !== 'full' && data.kind !== 'persistent') {
+        throw new Error(`Engine.load: unknown save kind ${String(data.kind)}`);
       }
       world.restore(data.world);
       rng.setState(data.rng);

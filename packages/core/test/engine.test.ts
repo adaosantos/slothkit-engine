@@ -468,3 +468,181 @@ describe('Determinism', () => {
     expect(() => engine.load(JSON.stringify({ format: 99 }))).toThrow();
   });
 });
+
+describe('State tiers', () => {
+  type Game = {
+    components: {
+      unit: { xp: number };
+      wild: true;
+      position: { x: number };
+      target: { id: number };
+    };
+    resources: { kills: number; spawnTimer: number };
+  };
+
+  /** Keeps three wild creatures around; the first unit hunts them and earns XP. */
+  const spawner = defineSystem<Game>({
+    name: 'spawner',
+    run: ({ world, rng }) => {
+      world.resources.spawnTimer++;
+      if (world.query('wild').length < 3 && world.resources.spawnTimer >= 2) {
+        world.resources.spawnTimer = 0;
+        world.spawn({ wild: true, position: { x: rng('spawn').int(0, 100) } });
+      }
+    },
+  });
+
+  const placer = defineSystem<Game>({
+    name: 'placer',
+    run: ({ world }) => {
+      for (const unit of world.query('unit')) {
+        if (!unit.position) world.add(unit, 'position', { x: 0 });
+      }
+    },
+  });
+
+  const hunter = defineSystem<Game>({
+    name: 'hunter',
+    run: ({ world, rng }) => {
+      const unit = world.query('unit', 'position')[0];
+      if (!unit) return;
+      const target = unit.target && world.get(unit.target.id);
+      if (!target) {
+        const prey = world.query('wild')[0];
+        if (prey) world.add(unit, 'target', { id: prey.id });
+        else world.remove(unit, 'target');
+        return;
+      }
+      if (rng('combat').chance(0.25)) {
+        world.despawn(target.id);
+        world.remove(unit, 'target');
+        unit.unit.xp += rng('xp').int(1, 10);
+        world.resources.kills++;
+      }
+    },
+  });
+
+  const createGame = () => {
+    const engine = createEngine<Game>({
+      seed: 7,
+      systems: [spawner, placer, hunter],
+      resources: { kills: 0, spawnTimer: 0 },
+      transient: {
+        entities: ['wild'],
+        components: ['position', 'target'],
+        resources: ['spawnTimer'],
+      },
+    });
+    engine.world.spawn({ unit: { xp: 0 } });
+    return engine;
+  };
+
+  it('leave transient state out of a persistent save', () => {
+    const engine = createGame();
+    engine.step(100);
+    expect(engine.world.query('wild').length).toBeGreaterThan(0);
+
+    const save = JSON.parse(engine.serialize({ tier: 'persistent' }));
+    const full = JSON.parse(engine.serialize());
+    expect(save.kind).toBe('persistent');
+    expect(save.world.entities).toEqual([{ id: 1, unit: engine.world.get(1)?.unit }]);
+    expect(save.world.resources).toEqual({ kills: engine.world.resources.kills, spawnTimer: 0 });
+    expect(save.world.nextId).toBe(full.world.nextId);
+    expect(save.tick).toBe(100);
+    // RNG keeps going: rewinding it to the seed would replay the same drops on every reconnect.
+    expect(save.rng).toEqual(full.rng);
+    expect(Object.keys(save.rng)).toEqual(expect.arrayContaining(['spawn', 'combat', 'xp']));
+    expect(save.accumulator).toBe(0);
+    expect(save.pending).toEqual([]);
+  });
+
+  it('do not touch the live world when saving', () => {
+    const engine = createGame();
+    engine.step(100);
+    const before = engine.serialize();
+    engine.serialize({ tier: 'persistent' });
+    expect(engine.serialize()).toBe(before);
+  });
+
+  it('reset the scene to the same state a persistent load produces', () => {
+    const engine = createGame();
+    engine.step(137);
+    engine.advance(50);
+    const loaded = createGame();
+    loaded.load(engine.serialize({ tier: 'persistent' }));
+    engine.resetScene();
+    expect(engine.world.query('wild')).toEqual([]);
+    expect(engine.world.get(1)?.position).toBeUndefined();
+    expect(engine.alpha).toBe(0);
+    expect(engine.serialize()).toBe(loaded.serialize());
+  });
+
+  it('continue identically after persistent save → load → reset', () => {
+    const live = createGame();
+    live.step(500);
+    const restored = createGame();
+    restored.load(live.serialize({ tier: 'persistent' }));
+    restored.resetScene();
+    live.resetScene();
+    live.step(500);
+    restored.step(500);
+    expect(restored.serialize()).toBe(live.serialize());
+    expect(restored.world.resources.kills).toBeGreaterThan(0);
+    expect(restored.world.query('wild').length).toBeGreaterThan(0);
+  });
+
+  it('never reuse ids of dropped transient entities', () => {
+    const engine = createGame();
+    engine.step(100);
+    const nextId = JSON.parse(engine.serialize()).world.nextId;
+    engine.resetScene();
+    expect(engine.world.spawn({}).id).toBe(nextId);
+  });
+
+  it('make an entity persistent when its marker is removed', () => {
+    const engine = createGame();
+    engine.step(20);
+    const captured = engine.world.query('wild')[0];
+    if (!captured) throw new Error('expected a wild creature');
+    engine.world.remove(captured, 'wild');
+    engine.world.add(captured, 'unit', { xp: 0 });
+    engine.resetScene();
+    expect(engine.world.get(captured.id)).toEqual({ id: captured.id, unit: { xp: 0 } });
+  });
+
+  it('drop pending commands', () => {
+    const engine = createEngine<{ commands: { ping: Record<never, never> } }>({
+      seed: 1,
+      commands: { ping: () => {} },
+    });
+    engine.dispatch({ type: 'ping' });
+    expect(JSON.parse(engine.serialize({ tier: 'persistent' })).pending).toEqual([]);
+    engine.resetScene();
+    expect(JSON.parse(engine.serialize()).pending).toEqual([]);
+  });
+
+  it('refuse to reset during a tick', () => {
+    const engine = createEngine({
+      seed: 1,
+      systems: [{ name: 'reset', run: () => engine.resetScene() }],
+    });
+    expect(() => engine.step()).toThrow(/during a tick/);
+    expect(() => engine.resetScene()).not.toThrow();
+  });
+
+  it('reject a transient resource without an initial value', () => {
+    expect(() =>
+      createEngine<{ resources: { a: number } }>({
+        seed: 1,
+        resources: { a: 0 },
+        transient: { resources: ['b' as never] },
+      }),
+    ).toThrow(/no initial value/);
+  });
+
+  it('reject a save of unknown kind', () => {
+    const engine = createGame();
+    const save = { ...JSON.parse(engine.serialize()), kind: 'partial' };
+    expect(() => engine.load(JSON.stringify(save))).toThrow(/unknown save kind/);
+  });
+});

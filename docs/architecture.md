@@ -47,6 +47,25 @@ Time away is always measured with the server clock. The client's clock is never 
 
 Transient state can be thrown away at any time without the player losing anything. That keeps saves small, makes offline estimation work on persistent state only, and lets a returning player see their party hunting on a freshly populated map.
 
+In `core`, the game declares its transient state by key:
+
+```ts
+createEngine<Game>({
+  seed,
+  transient: {
+    entities: ['wild'], // an entity carrying a marker is transient as a whole
+    components: ['position', 'target'], // stripped from persistent entities
+    resources: ['spawnTimers'], // reset to their initial value
+  },
+});
+```
+
+- Everything is persistent by default, so a missing declaration can't lose player data.
+- Capturing a creature is `world.remove(creature, 'wild')`: without its marker it becomes persistent.
+- `engine.serialize({ tier: 'persistent' })` leaves out transient state, pending commands, and the partial tick. It keeps the tick count, the next entity id (ids are never reused), and the RNG stream states. Rewinding RNG to the seed would replay the same drops after every reconnect.
+- `engine.resetScene()` drops transient state in place. It is defined as loading a persistent save of the current state, and a test checks both paths produce identical state.
+- The core doesn't repopulate the scene. Spawners see no wild creatures and spawn them; a placement system sees units without a position and places them.
+
 ## Persistence
 
 The live engine is the hot state. The database is updated according to what changed:

@@ -286,6 +286,18 @@ socket.on('message', (data) => {
 await db.appendCommands(playerId, engine.drainCommandLog());
 ```
 
+Mark scene-only state as `transient` and save only what the player owns:
+
+```ts
+const engine = createEngine<Game>({
+  seed,
+  transient: { entities: ['wild'], components: ['position', 'target'] },
+});
+
+await db.savePlayer(playerId, engine.serialize({ tier: 'persistent' }));
+engine.load(await db.loadPlayer(playerId)); // the scene starts empty; spawners repopulate it
+```
+
 See [docs/architecture.md](./docs/architecture.md) for the full design.
 
 ## Core concepts

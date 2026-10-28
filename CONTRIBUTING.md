@@ -102,7 +102,7 @@ Creatures, items, maps, and rules are declared as plain data. Behavior lives in 
 
 ### 6. Saves never break
 
-Any change to the shape of saved state needs a save migration and a test that loads a save from the previous version.
+After the first public release, any change to the shape of saved state needs a save migration and a test that loads a save from the previous version. Until then, save formats may change freely.
 
 ## Tests
 
