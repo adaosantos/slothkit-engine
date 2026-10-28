@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@slothkit/core"><img src="https://img.shields.io/npm/v/@slothkit/core?color=7c6f57" alt="npm"></a>
+  <a href="https://www.npmjs.com/package/@slothkit-engine/core"><img src="https://img.shields.io/npm/v/@slothkit-engine/core?color=7c6f57" alt="npm"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="license"></a>
   <a href="#status"><img src="https://img.shields.io/badge/status-pre--alpha-orange" alt="status"></a>
 </p>
@@ -57,9 +57,9 @@ Slothkit doesn't draw anything. It exposes positions, HP, and events, and you re
 A creature-collector setup: a trainer with a team of up to six creatures, each leveling independently.
 
 ```ts
-import { defineGame, createEngine } from '@slothkit/core';
-import { loot, heal, spawn, level } from '@slothkit/content';
-import { below, lowest, any, bagFull, stockBelow, fainted, sellAll, buyUpTo } from '@slothkit/rules';
+import { defineGame, createEngine } from '@slothkit-engine/core';
+import { loot, heal, spawn, level } from '@slothkit-engine/content';
+import { below, lowest, any, bagFull, stockBelow, fainted, sellAll, buyUpTo } from '@slothkit-engine/rules';
 
 const game = defineGame({
   // Templates for everything that fights, ally or enemy
@@ -241,16 +241,16 @@ createEngine(game, {
 
 | Package | What it does |
 | --- | --- |
-| `@slothkit/core` | Fixed-timestep loop, entities, systems, events, commands, seeded RNG |
-| `@slothkit/content` | Declaring unit templates, items, maps, loot tables, and shops |
-| `@slothkit/units` | Stats, growth, levels, XP curves, modifiers |
-| `@slothkit/party` | Party config, deployment, formation, XP sharing, faints and wipes, shared inventory |
-| `@slothkit/world` | Map instances, spawn zones, respawns, travel between maps and towns |
-| `@slothkit/combat` | Target selection, aggro, packs, steering, locked fights, damage formulas |
-| `@slothkit/rules` | Hunting automation: potion use, return-to-town conditions, town routines |
-| `@slothkit/save` | Versioned saves, migrations, compression, export/import strings |
-| `@slothkit/sim` | Offline estimation and the headless balance simulator |
-| `@slothkit/devtools` | Inspector: live state, time warp, modifier breakdowns, spawn overlays |
+| `@slothkit-engine/core` | Fixed-timestep loop, entities, systems, events, commands, seeded RNG |
+| `@slothkit-engine/content` | Declaring unit templates, items, maps, loot tables, and shops |
+| `@slothkit-engine/units` | Stats, growth, levels, XP curves, modifiers |
+| `@slothkit-engine/party` | Party config, deployment, formation, XP sharing, faints and wipes, shared inventory |
+| `@slothkit-engine/world` | Map instances, spawn zones, respawns, travel between maps and towns |
+| `@slothkit-engine/combat` | Target selection, aggro, packs, steering, locked fights, damage formulas |
+| `@slothkit-engine/rules` | Hunting automation: potion use, return-to-town conditions, town routines |
+| `@slothkit-engine/save` | Versioned saves, migrations, compression, export/import strings |
+| `@slothkit-engine/sim` | Offline estimation and the headless balance simulator |
+| `@slothkit-engine/devtools` | Inspector: live state, time warp, modifier breakdowns, spawn overlays |
 
 ## Core concepts
 

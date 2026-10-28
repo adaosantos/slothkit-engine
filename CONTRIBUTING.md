@@ -36,7 +36,7 @@ pnpm build
 ## Project structure
 
 ```
-packages/       one folder per published package (@slothkit/core, ...)
+packages/       one folder per published package (@slothkit-engine/core, ...)
   core/
     src/        source code
     test/       tests (*.test.ts)
@@ -78,7 +78,7 @@ Slothkit runs in browsers, Node, Deno, and Bun.
 
 - Don't use runtime-specific APIs (`node:fs`, `process`, `Bun.*`, `Deno.*`) in `packages/*/src`.
 - Don't draw anything or touch the DOM. The engine exposes state and events; rendering belongs to the game.
-- `@slothkit/core` has **zero runtime dependencies**. Other packages should avoid them too. If you think one is needed, raise it in an issue first.
+- `@slothkit-engine/core` has **zero runtime dependencies**. Other packages should avoid them too. If you think one is needed, raise it in an issue first.
 
 ### 4. Exported functions have explicit types
 

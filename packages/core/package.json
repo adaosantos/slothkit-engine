@@ -1,5 +1,5 @@
 {
-  "name": "@slothkit/core",
+  "name": "@slothkit-engine/core",
   "version": "0.0.0",
   "description": "Fixed-timestep loop, entities, systems, events, commands, and seeded RNG for Slothkit.",
   "license": "MIT",
